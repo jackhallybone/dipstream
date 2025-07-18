@@ -38,14 +38,13 @@ def run_protocol(fs, dipstream):
     # Stop the noise
     dipstream.stop("noise")
 
-    ## Print some timing info for dev
+    ## Print some timing info for assessing latency and timing errors
 
     noise_start = dipstream.get_event_time(("noise", dipstream.Event.START))
     noise_end = dipstream.get_event_time(("noise", dipstream.Event.END))
     noise_duration_got = dipstream.elapsed_between(
         ("noise", dipstream.Event.START), ("noise", dipstream.Event.END)
     )
-    noise_duration_calculated = noise_end - noise_start
     expected_noise_duration = 3 + 2 + 3
 
     tone_start = dipstream.get_event_time(("tone", dipstream.Event.START))
@@ -53,17 +52,16 @@ def run_protocol(fs, dipstream):
     tone_duration_got = dipstream.elapsed_between(
         ("tone", dipstream.Event.START), ("tone", dipstream.Event.END)
     )
-    tone_duration_calculated = tone_end - tone_start
     expected_tone_duration = 2
 
     print(
-        f"NOISE: start={noise_start}, end={noise_end}, dur_got={noise_duration_got}, dur_calc={noise_duration_calculated}, dur_expected={expected_noise_duration}, error={noise_duration_got-expected_noise_duration}"
+        f"NOISE: start={noise_start}, end={noise_end}, dur_got={noise_duration_got}, dur_expected={expected_noise_duration}, error={noise_duration_got-expected_noise_duration}"
     )
     print(
-        f"TONE: start={tone_start}, end={tone_end}, dur_got={tone_duration_got}, dur_calc={tone_duration_calculated}, dur_expected={expected_tone_duration}, error={tone_duration_got-expected_tone_duration}"
+        f"TONE: start={tone_start}, end={tone_end}, dur_got={tone_duration_got}, dur_expected={expected_tone_duration}, error={tone_duration_got-expected_tone_duration}"
     )
-    print("current blocksize", dipstream.current_blocksize)
-    print("current block duration", dipstream.current_blocksize / fs)
+    print("Current blocksize", dipstream.current_blocksize)
+    print("Current block duration", dipstream.current_blocksize / fs)
 
 
 def main():
