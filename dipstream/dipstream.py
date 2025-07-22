@@ -10,6 +10,10 @@ os.environ["SD_ENABLE_ASIO"] = "1"
 import sounddevice as sd
 
 
+def query_devices():
+    return sd.query_devices()
+
+
 class _Source:
 
     def __init__(self, name, fs, data, channel_mapping):
@@ -137,7 +141,9 @@ class DipStream:
             self._current_blocksize = frames
 
         # NOTE: it would be better to use time["outputBufferDacTime"] but it is not provided by ASIO
-        mix_block = self._mix_and_map_sources(frames, self._stream.channels, self.now, self.fs)
+        mix_block = self._mix_and_map_sources(
+            frames, self._stream.channels, self.now, self.fs
+        )
 
         if mix_block.shape != outdata.shape:
             raise ValueError(
@@ -215,7 +221,9 @@ class DipStream:
         if fs != self.fs:
             raise ValueError(f"Sample rate mismatch for source '{name}'.")
         if data.ndim != 2:
-            raise ValueError(f"Data shape must be (n_samples, n_channels), even for mono signals.")
+            raise ValueError(
+                f"Data shape must be (n_samples, n_channels), even for mono signals."
+            )
         if not all(1 <= ch <= self._stream.channels for ch in channel_mapping):
             raise ValueError(f"Invalid channel mapping for source '{name}'.")
         if data.shape[1] > 1 and data.shape[1] != len(channel_mapping):

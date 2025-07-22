@@ -2,9 +2,18 @@
 
 A thin wrapper for a [sounddevice](https://python-sounddevice.readthedocs.io/en/latest/) `OutputStream` to allow signals to "dip in and out" independently of each other.
 
+## Install as (editable) local package
+```
+pip install -e .
+```
+
+## Example
+
 For example, the following will continually loop background noise on the left channel for 3 seconds, then add a 2 second tone on the right channel, then continue the background noise for 3 more seconds:
 
 ```python
+from dipstream import DipStream
+
 dipstream = DipStream(fs=fs, device="Realtek ASIO", channels=[1, 2])
 
 with dipstream:
