@@ -114,13 +114,13 @@ class DipStream:
         self._lock = threading.Lock()
 
         # Check that the sounddevice settings are valid
-        sd.check_output_settings(samplerate=fs, device=device, channels=channels)
+        sd.check_output_settings(samplerate=fs, device=device, channels=max(channels))
 
         self._sources = {}
         self._stream = sd.OutputStream(
             samplerate=fs,
             device=device,
-            channels=channels,
+            channels=max(channels),
             blocksize=0,  # use default or optimal blocksize provided by the device
             callback=self._callback,
         )
@@ -137,7 +137,7 @@ class DipStream:
             self._current_blocksize = frames
 
         # NOTE: it would be better to use time["outputBufferDacTime"] but it is not provided by ASIO
-        mix_block = self._mix_sources(frames, self._stream.channels, self.now, self.fs)
+        mix_block = self._mix_and_map_sources(frames, self._stream.channels, self.now, self.fs)
 
         if mix_block.shape != outdata.shape:
             raise ValueError(
@@ -186,15 +186,19 @@ class DipStream:
 
     # Source
 
-    def _mix_sources(self, n_frames, n_channels, block_time, fs):
-        """Merge the output of all sources into one output block and map their channels."""
+    def _mix_and_map_sources(self, n_frames, n_channels, block_time, fs):
+        """Mix the output of all sources, mapped to channels, into one output block."""
         with self._lock:
             mix = np.zeros((n_frames, n_channels))
             for source in self._sources.values():
                 src_block = source.get_next_block(n_frames, block_time, fs)
-                if src_block is None:  # it is not playing
+                # Pass if source is not playing (and therefore returns None)
+                if src_block is None:
                     continue
-                for src_ch, out_ch in enumerate(source.channel_mapping):
+                # Map source channels to output channels (allowing mono signals to be mapped to multiple channels)
+                is_mono = src_block.shape[1] == 1
+                for i, out_ch in enumerate(source.channel_mapping):
+                    src_ch = 0 if is_mono else i
                     mix[:, out_ch - 1] += src_block[:, src_ch]
         return mix
 
@@ -204,13 +208,19 @@ class DipStream:
             return name in self._sources
 
     def add(self, name, fs, data, channel_mapping, replace=False):
-        """Add a source to the collection (which starts off inactive)."""
+        """Add a source to the collection (which starts off inactive).
+
+        NOTE: mono signals can be mapped to multiple channels
+        """
         if fs != self.fs:
             raise ValueError(f"Sample rate mismatch for source '{name}'.")
-        if data.shape[1] != len(channel_mapping):
-            raise ValueError(f"Incorrect number of channels for source '{name}'.")
+        if data.ndim != 2:
+            raise ValueError(f"Data shape must be (n_samples, n_channels), even for mono signals.")
         if not all(1 <= ch <= self._stream.channels for ch in channel_mapping):
             raise ValueError(f"Invalid channel mapping for source '{name}'.")
+        if data.shape[1] > 1 and data.shape[1] != len(channel_mapping):
+            raise ValueError(f"Incorrect number of channels for source '{name}'.")
+
         with self._lock:
             if name in self._sources and not replace:
                 raise ValueError(f"Source '{name}' already exists.")
