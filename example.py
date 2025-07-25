@@ -47,35 +47,26 @@ def audio_sequence(fs, dipstream):
 
     ## Print some timing info for assessing latency and timing errors
     print(
-        "NOISE: start={}, end={}, duration={}s, expected={}s, error={}s".format(
+        "NOISE: start={}, end={}, playback_duration={}s, expected={}s, error={}s".format(
             dipstream.start_time("noise"),
             dipstream.end_time("noise"),
-            dipstream.elapsed_between(
-                dipstream.start_time("noise"), dipstream.end_time("noise")
-            ),
+            dipstream.playback_duration("noise"),
             expected_noise_duration_s,
-            dipstream.elapsed_between(
-                dipstream.start_time("noise"), dipstream.end_time("noise")
-            )
-            - expected_noise_duration_s,
+            dipstream.playback_duration("noise") - expected_noise_duration_s,
         )
     )
     print(
         "TONE: start={}, end={}, duration={}s, expected={}s, error={}s".format(
             dipstream.start_time("tone"),
             dipstream.end_time("tone"),
-            dipstream.elapsed_between(
-                dipstream.start_time("tone"), dipstream.end_time("tone")
-            ),
-            tone_duration_s,
-            dipstream.elapsed_between(
-                dipstream.start_time("tone"), dipstream.end_time("tone")
-            )
-            - tone_duration_s,
+            dipstream.playback_duration("tone"),
+            dipstream.data_duration("tone"),  # based on the data itself
+            dipstream.playback_duration("tone") - dipstream.data_duration("tone"),
         )
     )
     print(f"Current blocksize = {dipstream.current_blocksize}")
-    print(f"Current block duration = {dipstream.current_blocksize / fs}s")
+    print(f"Current block duration = {dipstream.current_blocksize / dipstream.fs}s")
+    print(f"Sample duration = {1/ dipstream.fs:.8f}s")
 
 
 def main():

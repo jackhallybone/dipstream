@@ -223,13 +223,13 @@ class DipStream:
     ) -> str:
         """Add a source to the collection (which starts off inactive).
 
-        NOTE: mono signals can be mapped to multiple channels
+        NOTE: mono audio can be mapped to multiple channels
         """
         if fs != self.fs:
             raise ValueError(f"Sample rate mismatch for source '{name}'.")
         if data.ndim != 2:
             raise ValueError(
-                f"Data shape must be (n_samples, n_channels), even for mono signals."
+                f"Data shape must be (n_samples, n_channels), even for mono audio."
             )
         if not all(1 <= ch <= self._stream.channels for ch in channel_mapping):
             raise ValueError(f"Invalid channel mapping for source '{name}'.")
@@ -283,12 +283,6 @@ class DipStream:
                 f"Source '{name}' did not stop on time (after {timeout}s)"
             )
 
-    def duration(self, name: str) -> float:
-        """Get the duration of a source's signal/data in seconds."""
-        with self._lock:
-            source = self._get_source_by_name(name)
-            return source.duration
-
     # Timing
 
     def start_time(self, name: str) -> float | None:
@@ -306,6 +300,20 @@ class DipStream:
     def elapsed_between(self, start: float, end: float) -> float:
         """Calculate the elapsed time between two times."""
         return end - start
+
+    def data_duration(self, name: str) -> float:
+        """Get the duration of a source's audio data in seconds."""
+        with self._lock:
+            source = self._get_source_by_name(name)
+            return source.duration
+
+    def playback_duration(self, name: str) -> float | None:
+        """Get the duration of a source's playback in seconds"""
+        start = self.start_time(name)
+        end = self.end_time(name)
+        if start is None or end is None:
+            return None
+        return self.elapsed_between(start, end)
 
     def wait_until_time(
         self, target_time: float, plus: float = 0, sleep_in_loop: float = 0.005
