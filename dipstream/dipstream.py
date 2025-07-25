@@ -16,7 +16,9 @@ def query_devices():
 
 class _Source:
 
-    def __init__(self, name, fs, data, channel_mapping):
+    def __init__(
+        self, name: str, fs: int, data: np.ndarray, channel_mapping: list[int]
+    ):
         self.name = name
         self.fs = fs
         self.data = data
@@ -32,7 +34,7 @@ class _Source:
         self.end_time = None
         self.end_event = threading.Event()
 
-    def start(self, starting_idx=0, loop=False):
+    def start(self, starting_idx: int = 0, loop: bool = False):
         """Set flags to indicate the source should output data when requested.
 
         NOTE: start_time is recorded when playback actually starts, not when this function is called.
@@ -53,7 +55,9 @@ class _Source:
         self.playing = False
 
     @staticmethod
-    def get_n_frames_from_data(data, read_idx, n_frames, loop):
+    def get_n_frames_from_data(
+        data: np.ndarray, read_idx: int, n_frames: int, loop: bool
+    ):
         """Get the next n_frames from data, wrapping at the end if looping or padding if ended early."""
 
         # Case 1: full block available
@@ -77,7 +81,7 @@ class _Source:
         next_read_idx = len(data)  # indicates the end
         return block, len(data), len(part1)
 
-    def get_next_block(self, n_frames, block_time, fs):
+    def get_next_block(self, n_frames: int, block_time: float, fs: int):
         """Get the next block of audio data, or return None if not currently playing."""
         if not self.playing:
             if self.end_time is None:
@@ -108,7 +112,7 @@ class DipStream:
     NOTE: times are relative to the sounddevice stream clock.
     """
 
-    def __init__(self, fs, device, channels):
+    def __init__(self, fs: int, device: str | None, channels: list[int]):
         self._lock = threading.Lock()
 
         # Check that the sounddevice settings are valid
@@ -122,7 +126,7 @@ class DipStream:
             blocksize=0,  # use default or optimal blocksize provided by the device
             callback=self._callback,
         )
-        self._current_blocksize = None
+        self._current_blocksize = 0
 
     # Stream
 
@@ -169,24 +173,26 @@ class DipStream:
         self._stream.stop()
 
     @property
-    def now(self):
+    def now(self) -> float:
         """Get the current stream time."""
         return self._stream.time
 
     @property
-    def fs(self):
+    def fs(self) -> int:
         """Get the sample rate of the stream."""
         return self._stream.samplerate
 
     @property
-    def current_blocksize(self):
+    def current_blocksize(self) -> int:
         """Get the blocksize of the stream (gets the current/latest value of variable streams)."""
         with self._lock:
             return self._current_blocksize
 
     # Source
 
-    def _mix_and_map_sources(self, n_frames, n_channels, block_time, fs):
+    def _mix_and_map_sources(
+        self, n_frames: int, n_channels: int, block_time: float, fs: int
+    ) -> np.ndarray:
         """Mix the output of all sources, mapped to channels, into one output block."""
         with self._lock:
             mix = np.zeros((n_frames, n_channels))
@@ -202,12 +208,19 @@ class DipStream:
                     mix[:, out_ch - 1] += src_block[:, src_ch]
         return mix
 
-    def __contains__(self, name):
+    def __contains__(self, name: str) -> bool:
         """Allow lookup of stream names directly from the instance."""
         with self._lock:
             return name in self._sources
 
-    def add(self, name, fs, data, channel_mapping, replace=False):
+    def add(
+        self,
+        name: str,
+        fs: int,
+        data: np.ndarray,
+        channel_mapping: list[int],
+        replace: bool = False,
+    ) -> str:
         """Add a source to the collection (which starts off inactive).
 
         NOTE: mono signals can be mapped to multiple channels
@@ -228,7 +241,9 @@ class DipStream:
                 raise ValueError(f"Source '{name}' already exists.")
             self._sources[name] = _Source(name, fs, data, channel_mapping)
 
-    def remove(self, name):
+        return name
+
+    def remove(self, name: str):
         """Remove a source from the collection."""
         with self._lock:
             if name in self._sources:
@@ -239,39 +254,37 @@ class DipStream:
         with self._lock:
             self._sources = {}
 
-    def _get_source_by_name(self, name):
+    def _get_source_by_name(self, name: str) -> _Source:
         """Lookup a source by name. Must be called inside a lock."""
         source = self._sources.get(name)
         if source is None:
             raise KeyError(f"No source named '{name}'")
         return source
 
-    def start(self, name, loop=False):
+    def start(self, name: str, loop: bool = False, timeout: float | None = 0.5):
         """Start playback of a source."""
         with self._lock:
             source = self._get_source_by_name(name)
             source.start(loop=loop)
         # Wait for the actual start (which should happen in the next callback)
-        if not source.start_event.wait(
-            timeout=0.5
-        ):  # TODO: timeout based on next callback time?
-            raise RuntimeError(f"Source '{name}' did not start on time")
+        if not source.start_event.wait(timeout=timeout):
+            raise RuntimeError(
+                f"Source '{name}' did not start on time (after {timeout}s)"
+            )
 
-    def stop(self, name):
+    def stop(self, name: str, timeout: float | None = 0.5):
         """Stop playback of a source."""
         with self._lock:
             source = self._get_source_by_name(name)
             source.stop()
         # Wait for the actual stop (which should happen in the next callback)
-        if not source.end_event.wait(
-            timeout=0.5
-        ):  # TODO: timeout based on next callback time?
-            raise RuntimeError(f"Source '{name}' did not stop on time")
+        if not source.end_event.wait(timeout=timeout):
+            raise RuntimeError(
+                f"Source '{name}' did not stop on time (after {timeout}s)"
+            )
 
-    # TODO: consider adding play() which calls add() then start()
-
-    def duration(self, name):
-        """Get the duration of a source in seconds."""
+    def duration(self, name: str) -> float:
+        """Get the duration of a source's signal/data in seconds."""
         with self._lock:
             source = self._get_source_by_name(name)
             return source.duration
@@ -294,32 +307,50 @@ class DipStream:
         """Calculate the elapsed time between two times."""
         return end - start
 
-    def wait_until_time(self, target_time, plus=0, sleep_in_loop=0.005):
+    def wait_until_time(
+        self, target_time: float, plus: float = 0, sleep_in_loop: float = 0.005
+    ):
         """Wait in a loop until a specified time, with optional additional delay."""
         target_time += plus
         while self.now < target_time:
             time.sleep(sleep_in_loop)
 
-    def wait_until_start(self, name, plus=0, timeout=None, sleep_in_loop=0.005):
+    def wait_until_start(
+        self,
+        name: str,
+        plus: float = 0,
+        timeout: float | None = None,
+        sleep_in_loop: float = 0.005,
+    ):
         """Wait until the start event has fired, with optional additional delay."""
         with self._lock:
             source = self._get_source_by_name(name)
         fired = source.start_event.wait(timeout=timeout)
         if not fired:
             raise RuntimeError(
-                f"{name} start event did not fire in time (after {timeout}s)"
+                f"Source '{name}' start event did not fire in time (after {timeout}s)"
             )
         start_time = self.start_time(name)
+        if start_time is None:
+            raise ValueError(f"Source '{name}' has not started.")
         self.wait_until_time(start_time, plus, sleep_in_loop)
 
-    def wait_until_end(self, name, plus=0, timeout=None, sleep_in_loop=0.005):
+    def wait_until_end(
+        self,
+        name: str,
+        plus: float = 0,
+        timeout: float | None = None,
+        sleep_in_loop: float = 0.005,
+    ):
         """Wait until the end event has fired, with optional additional delay."""
         with self._lock:
             source = self._get_source_by_name(name)
         fired = source.end_event.wait(timeout=timeout)
         if not fired:
             raise RuntimeError(
-                f"{name} end event did not fire in time (after {timeout}s)"
+                f"Source '{name}' end event did not fire in time (after {timeout}s)"
             )
         end_time = self.end_time(name)
+        if end_time is None:
+            raise ValueError(f"Source '{name}' has not ended.")
         self.wait_until_time(end_time, plus, sleep_in_loop)
