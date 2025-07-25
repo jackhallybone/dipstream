@@ -108,12 +108,6 @@ class DipStream:
     NOTE: times are relative to the sounddevice stream clock.
     """
 
-    class Event(str, Enum):
-        """Types of events a source can generate."""
-
-        START = "start"
-        END = "end"
-
     def __init__(self, fs, device, channels):
         self._lock = threading.Lock()
 
@@ -284,51 +278,48 @@ class DipStream:
 
     # Timing
 
-    def _get_time_of_event(self, source, event_name):
-        """Must be called within a lock."""
-        if event_name == self.Event.START:
+    def start_time(self, name: str) -> float | None:
+        """Get the start time of a source. This will be None if it hasn't started yet."""
+        with self._lock:
+            source = self._get_source_by_name(name)
             return source.start_time
-        elif event_name == self.Event.END:
+
+    def end_time(self, name: str) -> float | None:
+        """Get the end time of a source. This will be None if it hasn't started yet."""
+        with self._lock:
+            source = self._get_source_by_name(name)
             return source.end_time
-        else:
-            raise ValueError(f"Unknown event name ({event_name})")
 
-    def _wait_until_event(self, source, event_name, timeout=None):
-        """Must not be called within a lock."""
-        if event_name == self.Event.START:
-            return source.start_event.wait(timeout=timeout)
-        elif event_name == self.Event.END:
-            return source.end_event.wait(timeout=timeout)
-        else:
-            raise ValueError(f"Unknown event tag ({event_name})")
+    def elapsed_between(self, start: float, end: float) -> float:
+        """Calculate the elapsed time between two times."""
+        return end - start
 
-    def get_event_time(self, event):
-        """Get the stream time of an event (eg, source start or stop), or pass a time through."""
-        if isinstance(event, tuple):
-            name, event_name = event
-            with self._lock:
-                source = self._get_source_by_name(name)
-                return self._get_time_of_event(source, event_name)
-        return event
-
-    def wait_until(self, event, plus=0, timeout=None, sleep_in_loop=0.005):
-        """Wait (and/or sleep) until a given event has fired or time has passed."""
-        if isinstance(event, tuple):
-            name, event_name = event
-            with self._lock:
-                source = self._get_source_by_name(name)
-            fired = self._wait_until_event(source, event_name, timeout)
-            if not fired:
-                raise RuntimeError(f"Event '{event}' did not fire in time")
-            with self._lock:
-                target_time = self._get_time_of_event(source, event_name)
-        else:
-            target_time = event
-
+    def wait_until_time(self, target_time, plus=0, sleep_in_loop=0.005):
+        """Wait in a loop until a specified time, with optional additional delay."""
         target_time += plus
         while self.now < target_time:
             time.sleep(sleep_in_loop)
 
-    def elapsed_between(self, start, end):
-        """Calculate the elapsed stream time between two events or times."""
-        return self.get_event_time(end) - self.get_event_time(start)
+    def wait_until_start(self, name, plus=0, timeout=None, sleep_in_loop=0.005):
+        """Wait until the start event has fired, with optional additional delay."""
+        with self._lock:
+            source = self._get_source_by_name(name)
+        fired = source.start_event.wait(timeout=timeout)
+        if not fired:
+            raise RuntimeError(
+                f"{name} start event did not fire in time (after {timeout}s)"
+            )
+        start_time = self.start_time(name)
+        self.wait_until_time(start_time, plus, sleep_in_loop)
+
+    def wait_until_end(self, name, plus=0, timeout=None, sleep_in_loop=0.005):
+        """Wait until the end event has fired, with optional additional delay."""
+        with self._lock:
+            source = self._get_source_by_name(name)
+        fired = source.end_event.wait(timeout=timeout)
+        if not fired:
+            raise RuntimeError(
+                f"{name} end event did not fire in time (after {timeout}s)"
+            )
+        end_time = self.end_time(name)
+        self.wait_until_time(end_time, plus, sleep_in_loop)
