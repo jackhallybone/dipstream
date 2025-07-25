@@ -2,7 +2,7 @@
 
 A thin wrapper for a [sounddevice](https://python-sounddevice.readthedocs.io/en/latest/) `OutputStream` to allow signals to "dip in and out" independently of each other.
 
-## Useage
+## Usage
 
 ```
 pip install -e .
