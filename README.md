@@ -2,7 +2,7 @@
 
 A thin wrapper for a [sounddevice](https://python-sounddevice.readthedocs.io/en/latest/) `OutputStream` to allow signals to "dip in and out" independently of each other.
 
-## Usage
+## Getting started
 
 ```
 pip install -e .
@@ -13,35 +13,31 @@ from dipstream import DipStream
 
 dipstream = DipStream(fs=fs, device=None, channels=[1, 2]) # default stereo device
 
-with dipstream
+with dipstream:
 
     # Add and start a noise signal that will loop until stopped
-    dipstream.add("noise", fs=fs, data=my_noise, channel_mapping=[1]) # left
-    dipstream.start("noise", loop=True)
+    noise = dipstream.add(fs=fs, data=my_noise, channel_mapping=[1]) # left
+    noise.start(loop=True)
 
     # Wait for the noise to start then play for 3 seconds
-    dipstream.wait_until_start("noise", plus=3)
+    noise.wait_until_start(plus=3)
 
     # Add and start a tone signal that will play until it ends
-    dipstream.add("tone", fs=fs, data=my_tone, channel_mapping=[2]) # right
-    dipstream.start("tone")
+    tone = dipstream.add(fs=fs, data=my_tone, channel_mapping=[2]) # right
+    tone.start()
 
     # Wait for the tone to end, then play the noise for 3 more seconds
-    dipstream.wait_until_end("tone", plus=3)
+    tone.wait_until_end(plus=3)
 
     # Stop the noise signal
-    dipstream.stop("noise")
+    noise.stop()
+
+    # Remove the signals from the stream
+    dipstream.remove(noise)
+    dipstream.remove(tone)
 ```
 
-Sources are accessed by a string (`name`). To avoid repetition of a string in the code, this is returned by the `add()` function and can be used to address the source later.
-
-```python
-tone_name = dipstream.add("tone", ...)
-dipstream.start(tone_name)
-...
-```
-
-## API
+<!-- ## API
 
 ### Stream
 
@@ -52,11 +48,12 @@ with dipstream:
     # do something
 ```
 
-or
+alternatively, use
+
 ```python
-dipstream.start_stream()
+dipstream.start()
 # do something
-dipstream.stop_stream()
+dipstream.stop()
 ```
 
 
@@ -101,4 +98,4 @@ The user can manually handle waiting for playback, or the following functions ca
 
 - `wait_until_time(target_time: float, plus: float)`: wait until the target time, with an optional additional delay `plus`
 - `wait_until_start(name: str, plus: float)`: wait until a source has started with an optional delay `plus`
-- `wait_until_end(name: str, plus: float)`: wait until a source has ended with an optional delay `plus`
+- `wait_until_end(name: str, plus: float)`: wait until a source has ended with an optional delay `plus` -->

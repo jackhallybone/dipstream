@@ -15,93 +15,225 @@ def query_devices():
 
 
 class _Source:
+    """
+    consider making it impossible to create a standalone _Source?
+
+    def __init__(self, *args, **kwargs):
+        raise RuntimeError("Do not create Source directly; use Stream.add()")
+
+    """
 
     def __init__(
-        self, name: str, fs: int, data: np.ndarray, channel_mapping: list[int]
+        self,
+        dipstream: "DipStream",
+        fs: int,
+        data: np.ndarray,
+        channel_mapping: list[int],
     ):
-        self.name = name
-        self.fs = fs
-        self.data = data
-        self.channel_mapping = channel_mapping
+        self._lock = threading.Lock()
 
-        self.duration = data.shape[0] / fs
+        self._dipstream = dipstream
+        self._fs = fs
+        self._data = data
+        self._channel_mapping = channel_mapping
 
-        self.playing = False
-        self.loop = False
-        self.read_idx = 0
-        self.start_time = None
-        self.start_event = threading.Event()
-        self.end_time = None
-        self.end_event = threading.Event()
+        # To match sounddevice, mapping starts with 1, so convert to numpy index
+        self._channel_mapping_indices = np.array(self._channel_mapping) - 1
 
-    def start(self, starting_idx: int = 0, loop: bool = False):
-        """Set flags to indicate the source should output data when requested.
+        self._playing = False
+        self._looping = False
+        self._read_idx = 0
+        self._start_time = None
+        self._start_event = threading.Event()
+        self._end_time = None
+        self._end_event = threading.Event()
 
-        NOTE: start_time is recorded when playback actually starts, not when this function is called.
-        """
-        self.playing = True
-        self.loop = loop
-        self.read_idx = starting_idx
-        self.start_time = None
-        self.start_event.clear()
-        self.end_time = None
-        self.end_event.clear()
+    def _must_exist_in_stream(self):
+        if self not in self._dipstream:  # Dipstream __contains__ handles the lock
+            raise RuntimeError(
+                "This source does not exist in Dipstream. Has it already been removed?"
+            )
 
-    def stop(self):
-        """Set flags to indicate the source should not output data when requested.
+    @property
+    def fs(self):
+        return self._fs
 
-        NOTE: end_time is recorded when playback actually stops, not when this function is called.
-        """
-        self.playing = False
+    @property
+    def data_duration(self):
+        return self._data.shape[0] / self._fs
+
+    @property
+    def playback_duration(self):
+        """Get the actual duration of the signal playback in seconds."""
+        with self._lock:
+            if self._start_time is None or self._end_time is None:
+                return None
+            return self._end_time - self._start_time
+
+    @property
+    def channel_mapping(self):
+        return list(self._channel_mapping)
+
+    @property
+    def end_time(self):
+        with self._lock:
+            return self._end_time
+
+    @property
+    def start_time(self):
+        with self._lock:
+            return self._start_time
+
+    @property
+    def is_playing(self):
+        with self._lock:
+            return self._playing
+
+    @property
+    def is_looping(self):
+        with self._lock:
+            return self._looping
+
+    def start(
+        self, starting_idx: int = 0, loop: bool = False, timeout: float | None = 0.5
+    ):
+        """Set flags to indicate that the source should output data on the stream when requested."""
+
+        self._must_exist_in_stream()
+
+        # Set flags to schedule the source to start playing on the stream
+        self._start_event.clear()
+        self._end_event.clear()
+        with self._lock:
+            self._playing = True
+            self._looping = loop
+            self._read_idx = starting_idx
+            self._start_time = None
+            self._end_time = None
+
+        # Wait for the actual start to happen
+        if not self._start_event.wait(timeout=timeout):
+            raise RuntimeError(f"Source did not start on time (after {timeout}s)")
+
+    def stop(self, timeout: float | None = None):
+        """Set flags to indicate that the source should not output data on the stream when requested."""
+
+        self._must_exist_in_stream()
+
+        # Set flags to schedule the source to stop playing on the stream
+        with self._lock:
+            self._playing = False
+            self._looping = False
+
+        # Wait for the actual stop to happen
+        if not self._end_event.wait(timeout=timeout):
+            raise RuntimeError(f"Source did not stop on time (after {timeout}s).")
+
+    def wait_until_start(self, plus: float = 0):
+        """Wait until the source has started playback, with optional additional further wait time."""
+
+        self._must_exist_in_stream()
+
+        with self._lock:
+            if not self._playing:
+                raise RuntimeError(
+                    "Cannot wait for a source start when start() has not been called."
+                )
+
+        self._start_event.wait(timeout=None)  # NOTE: unsafe with no timeout
+
+        if plus:
+            self._dipstream.wait_until_time(self._start_time, plus)
+
+
+    def wait_until_end(self, plus: float = 0):
+        """Wait until the source has completed playback, with optional additional further wait time."""
+
+        self._must_exist_in_stream()
+
+        with self._lock:
+            if not self._playing:
+                raise RuntimeError(
+                    "Cannot wait for a source to end when it has not yet started."
+                )
+            if self._looping:
+                raise RuntimeError("Cannot wait until a looping source has ended.")
+
+        self._end_event.wait(timeout=None)  # NOTE: unsafe with no timeout
+
+        if plus:
+            self._dipstream.wait_until_time(self._end_time, plus)
 
     @staticmethod
     def get_n_frames_from_data(
-        data: np.ndarray, read_idx: int, n_frames: int, loop: bool
+        data: np.ndarray, read_idx: int, n_frames: int, wrap: bool
     ):
-        """Get the next n_frames from data, wrapping at the end if looping or padding if ended early."""
+        """Get the next n_frames from data, padding with zeros or wrapping the signal at the end of the buffer."""
 
-        # Case 1: full block available
-        if read_idx + n_frames <= len(data):
-            block = data[read_idx : read_idx + n_frames]
-            next_read_idx = read_idx + n_frames
-            return block, next_read_idx, n_frames
+        data_n_frames, data_n_channels = data.shape
+        outdata = np.zeros((n_frames, data_n_channels))
+        n_frames_from_end = min(data_n_frames - read_idx, n_frames)
 
-        # Case 2: looping
-        if loop:
-            part1 = data[read_idx:]  # remaining frames from the end
-            part2 = data[: n_frames - len(part1)]  # frames from the start
-            block = np.concatenate((part1, part2))
-            next_read_idx = (read_idx + n_frames) % len(data)
-            return block, next_read_idx, n_frames
+        # Get as many frames as from the signal in data possible
+        outdata[:n_frames_from_end, :] = data[
+            read_idx : read_idx + n_frames_from_end, :
+        ]
+        new_read_idx = read_idx + n_frames_from_end
+        n_frames_with_data = n_frames_from_end
 
-        # Case 3: paddings
-        part1 = data[read_idx:]
-        pad = np.zeros((n_frames - len(part1), data.shape[1]))
-        block = np.concatenate((part1, pad))
-        next_read_idx = len(data)  # indicates the end
-        return block, len(data), len(part1)
+        # If the signal in data has ended, but outdata is not complete
+        # NOTE: if len(data) % n_frames = 0, we won't know it's ended until the next callback
+        if n_frames_from_end < n_frames:
+
+            # Complete the signal with frames from the start of the signal in data
+            if wrap:
+                n_frames_from_start = n_frames - n_frames_from_end
+                outdata[n_frames_from_end:, :] = data[:n_frames_from_start, :]
+                new_read_idx = n_frames_from_start
+                n_frames_with_data = n_frames
+
+            # Mark the signal as ended
+            else:
+                new_read_idx = data_n_frames
+                n_frames_with_data = n_frames_from_end
+
+        return outdata, new_read_idx, n_frames_with_data
 
     def get_next_block(self, n_frames: int, block_time: float, fs: int):
         """Get the next block of audio data, or return None if not currently playing."""
-        if not self.playing:
-            if self.end_time is None:
-                self.end_time = block_time
-                self.end_event.set()
-            return None
 
-        if self.start_time is None:
-            self.start_time = block_time
-            self.start_event.set()
+        with self._lock:
 
-        block, self.read_idx, n_frames_with_data = self.get_n_frames_from_data(
-            self.data, self.read_idx, n_frames, self.loop
+            # If not playing but no end time, stop() has been called so set the end and return None
+            if not self._playing:
+                if self._end_time is None:
+                    self._end_time = block_time
+                    self._end_event.set()
+                return None
+
+            # If playing, but no start time, start() has been called so set the start
+            if self._start_time is None:
+                self._start_time = block_time
+                self._start_event.set()
+
+            # Copy within lock
+            read_idx = self._read_idx
+            looping = self._looping
+
+        # Get the next frame of audio
+        block, new_read_idx, n_frames_with_data = self.get_n_frames_from_data(
+            self._data, read_idx, n_frames, looping
         )
 
-        if not self.loop and self.read_idx >= len(self.data):
-            self.playing = False
-            if self.end_time is None:
-                self.end_time = block_time + (n_frames_with_data / fs)
-                self.end_event.set()
+        with self._lock:
+            self._read_idx = new_read_idx
+
+            # If the signal has ended, update source attributes to indicate a stop/end
+            if n_frames_with_data < n_frames:
+                self._playing = False
+                if self._end_time is None:
+                    self._end_time = block_time + (n_frames_with_data / fs)
+                    self._end_event.set()
 
         return block
 
@@ -112,18 +244,20 @@ class DipStream:
     NOTE: times are relative to the sounddevice stream clock.
     """
 
-    def __init__(self, fs: int, device: str | None, channels: list[int]):
+    def __init__(
+        self, fs: int, device: str | None, channels: list[int], blocksize: int = 0
+    ):
         self._lock = threading.Lock()
 
         # Check that the sounddevice settings are valid
         sd.check_output_settings(samplerate=fs, device=device, channels=max(channels))
 
-        self._sources = {}
+        self._sources: set[_Source] = set()
         self._stream = sd.OutputStream(
             samplerate=fs,
             device=device,
             channels=max(channels),
-            blocksize=0,  # use default or optimal blocksize provided by the device
+            blocksize=blocksize,
             callback=self._callback,
         )
         self._current_blocksize = 0
@@ -139,21 +273,21 @@ class DipStream:
             self._current_blocksize = frames
 
         # NOTE: it would be better to use time["outputBufferDacTime"] but it is not provided by ASIO
-        mix_block = self._mix_and_map_sources(
+        mixed_block = self._mix_and_map_sources(
             frames, self._stream.channels, self.now, self.fs
         )
 
-        if mix_block.shape != outdata.shape:
+        if mixed_block.shape != outdata.shape:
             raise ValueError(
-                f"Output block shape error ({mix_block.shape} should be {outdata.shape})."
+                f"Output block shape error ({mixed_block.shape} should be {outdata.shape})."
             )
 
-        if np.any(np.abs(mix_block) > 1):
+        if np.any(np.abs(mixed_block) > 1):
             raise ValueError(
-                f"Output block contains amplitude values above 1 ({np.max(np.abs(mix_block))})"
+                f"Output block contains amplitude values above 1 ({np.max(np.abs(mixed_block))})"
             )
 
-        outdata[:] = mix_block
+        outdata[:] = mixed_block
 
     def __enter__(self):
         """Forward the enter function to the sounddevice stream. Implies self.start_stream()."""
@@ -164,11 +298,11 @@ class DipStream:
         """Forward the enter function to the sounddevice stream. Implies self.stop_stream()."""
         self._stream.__exit__(exc_type, exc_value, traceback)
 
-    def start_stream(self):
+    def start(self):
         """Forward the start function to the sounddevice stream."""
         self._stream.start()
 
-    def stop_stream(self):
+    def stop(self):
         """Forward the stop function to the sounddevice stream."""
         self._stream.stop()
 
@@ -188,132 +322,87 @@ class DipStream:
         with self._lock:
             return self._current_blocksize
 
-    # Source
+    # Sources
 
-    def _mix_and_map_sources(
-        self, n_frames: int, n_channels: int, block_time: float, fs: int
-    ) -> np.ndarray:
-        """Mix the output of all sources, mapped to channels, into one output block."""
-        with self._lock:
-            mix = np.zeros((n_frames, n_channels))
-            for source in self._sources.values():
-                src_block = source.get_next_block(n_frames, block_time, fs)
-                # Pass if source is not playing (and therefore returns None)
-                if src_block is None:
-                    continue
-                # Map source channels to output channels (allowing mono signals to be mapped to multiple channels)
-                is_mono = src_block.shape[1] == 1
-                for i, out_ch in enumerate(source.channel_mapping):
-                    src_ch = 0 if is_mono else i
-                    mix[:, out_ch - 1] += src_block[:, src_ch]
-        return mix
-
-    def __contains__(self, name: str) -> bool:
-        """Allow lookup of stream names directly from the instance."""
-        with self._lock:
-            return name in self._sources
-
-    def add(
-        self,
-        name: str,
-        fs: int,
-        data: np.ndarray,
-        channel_mapping: list[int],
-        replace: bool = False,
-    ) -> str:
+    def add(self, fs: int, data: np.ndarray, channel_mapping: list[int]) -> _Source:
         """Add a source to the collection (which starts off inactive).
 
         NOTE: mono audio can be mapped to multiple channels
         """
         if fs != self.fs:
-            raise ValueError(f"Sample rate mismatch for source '{name}'.")
+            raise ValueError("Source sample rate does match stream sample rate.")
         if data.ndim != 2:
             raise ValueError(
-                f"Data shape must be (n_samples, n_channels), even for mono audio."
+                "Audio signal must always be of shape (n_samples, n_channels)."
             )
-        if not all(1 <= ch <= self._stream.channels for ch in channel_mapping):
-            raise ValueError(f"Invalid channel mapping for source '{name}'.")
+        if min(channel_mapping) < 1 or max(channel_mapping) > self._stream.channels:
+            raise ValueError(
+                f"Channel numbers in mapping must be between 1 and {self._stream.channels}"
+            )
+        if len(channel_mapping) != len(set(channel_mapping)):
+            raise ValueError("Channel numbers cannot be repeated in mapping.")
         if data.shape[1] > 1 and data.shape[1] != len(channel_mapping):
-            raise ValueError(f"Incorrect number of channels for source '{name}'.")
+            raise ValueError(
+                "Number of channels mapped must equal the number of channels in the audio signal."
+            )
+
+        source = _Source(self, fs, data, channel_mapping)
 
         with self._lock:
-            if name in self._sources and not replace:
-                raise ValueError(f"Source '{name}' already exists.")
-            self._sources[name] = _Source(name, fs, data, channel_mapping)
+            self._sources.add(source)
 
-        return name
-
-    def remove(self, name: str):
-        """Remove a source from the collection."""
-        with self._lock:
-            if name in self._sources:
-                del self._sources[name]
-
-    def clear_sources(self):
-        """Remove all sources from the collection."""
-        with self._lock:
-            self._sources = {}
-
-    def _get_source_by_name(self, name: str) -> _Source:
-        """Lookup a source by name. Must be called inside a lock."""
-        source = self._sources.get(name)
-        if source is None:
-            raise KeyError(f"No source named '{name}'")
         return source
 
-    def start(self, name: str, loop: bool = False, timeout: float | None = 0.5):
-        """Start playback of a source."""
+    def __contains__(self, source: _Source) -> bool:
         with self._lock:
-            source = self._get_source_by_name(name)
-            source.start(loop=loop)
-        # Wait for the actual start (which should happen in the next callback)
-        if not source.start_event.wait(timeout=timeout):
-            raise RuntimeError(
-                f"Source '{name}' did not start on time (after {timeout}s)"
-            )
+            return source in self._sources
 
-    def stop(self, name: str, timeout: float | None = 0.5):
-        """Stop playback of a source."""
+    def remove(self, source: _Source):
+        """Remove a source from the stream."""
+        source._must_exist_in_stream()
+        with self._lock, source._lock:
+            if source._playing:
+                raise RuntimeError("Cannot remove a source while it is playing.")
+            self._sources.remove(source)
+
+    def clear_sources(self):
+        """Remove all sources from the stream."""
         with self._lock:
-            source = self._get_source_by_name(name)
-            source.stop()
-        # Wait for the actual stop (which should happen in the next callback)
-        if not source.end_event.wait(timeout=timeout):
-            raise RuntimeError(
-                f"Source '{name}' did not stop on time (after {timeout}s)"
-            )
+            self._sources.clear()
+
+    def _mix_and_map_sources(
+        self, n_frames: int, n_channels: int, block_time: float, fs: int
+    ) -> np.ndarray:
+        """Mix the output of all sources, mapped to channels, into one output block."""
+
+        mix = np.zeros((n_frames, n_channels))
+
+        with self._lock:
+            sources = list(
+                self._sources
+            )  # shallow snapshot of set, sources handle their internal locking
+
+        # Accumulate blocks of audio from the sources that are currently playing
+        for source in sources:
+            # get_next_block also handles the actual starting and stopping of sources
+            block = source.get_next_block(n_frames, block_time, fs)
+            if block is None:
+                continue
+
+            if block.shape[1] == 1:
+                # Mono sources are repeated on each output channel
+                mix[:, source._channel_mapping_indices] += block
+            else:
+                # Multichannel sources map source channel to output channel
+                mix[:, source._channel_mapping_indices] += block[:, :]
+
+        return mix
 
     # Timing
-
-    def start_time(self, name: str) -> float | None:
-        """Get the start time of a source. This will be None if it hasn't started yet."""
-        with self._lock:
-            source = self._get_source_by_name(name)
-            return source.start_time
-
-    def end_time(self, name: str) -> float | None:
-        """Get the end time of a source. This will be None if it hasn't started yet."""
-        with self._lock:
-            source = self._get_source_by_name(name)
-            return source.end_time
 
     def elapsed_between(self, start: float, end: float) -> float:
         """Calculate the elapsed time between two times."""
         return end - start
-
-    def data_duration(self, name: str) -> float:
-        """Get the duration of a source's audio data in seconds."""
-        with self._lock:
-            source = self._get_source_by_name(name)
-            return source.duration
-
-    def playback_duration(self, name: str) -> float | None:
-        """Get the duration of a source's playback in seconds"""
-        start = self.start_time(name)
-        end = self.end_time(name)
-        if start is None or end is None:
-            return None
-        return self.elapsed_between(start, end)
 
     def wait_until_time(
         self, target_time: float, plus: float = 0, sleep_in_loop: float = 0.005
@@ -322,43 +411,3 @@ class DipStream:
         target_time += plus
         while self.now < target_time:
             time.sleep(sleep_in_loop)
-
-    def wait_until_start(
-        self,
-        name: str,
-        plus: float = 0,
-        timeout: float | None = None,
-        sleep_in_loop: float = 0.005,
-    ):
-        """Wait until the start event has fired, with optional additional delay."""
-        with self._lock:
-            source = self._get_source_by_name(name)
-        fired = source.start_event.wait(timeout=timeout)
-        if not fired:
-            raise RuntimeError(
-                f"Source '{name}' start event did not fire in time (after {timeout}s)"
-            )
-        start_time = self.start_time(name)
-        if start_time is None:
-            raise ValueError(f"Source '{name}' has not started.")
-        self.wait_until_time(start_time, plus, sleep_in_loop)
-
-    def wait_until_end(
-        self,
-        name: str,
-        plus: float = 0,
-        timeout: float | None = None,
-        sleep_in_loop: float = 0.005,
-    ):
-        """Wait until the end event has fired, with optional additional delay."""
-        with self._lock:
-            source = self._get_source_by_name(name)
-        fired = source.end_event.wait(timeout=timeout)
-        if not fired:
-            raise RuntimeError(
-                f"Source '{name}' end event did not fire in time (after {timeout}s)"
-            )
-        end_time = self.end_time(name)
-        if end_time is None:
-            raise ValueError(f"Source '{name}' has not ended.")
-        self.wait_until_time(end_time, plus, sleep_in_loop)

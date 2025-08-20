@@ -25,43 +25,46 @@ def audio_sequence(fs, dipstream):
     tone = tone.reshape(-1, 1)
 
     # Add and start background noise
-    dipstream.add("noise", fs, noise, channel_mapping=[1])  # left channel
-    dipstream.start("noise", loop=True)
+    noise = dipstream.add(fs, noise, channel_mapping=[1])  # left channel
+    noise.start(loop=True)
 
     # Play noise only for 3 seconds (wait option #1: user handles the loop)
     while (
-        dipstream.elapsed_between(dipstream.start_time("noise"), dipstream.now)
+        dipstream.elapsed_between(noise.start_time, dipstream.now)
         < noise_duration_before_tone_s
     ):
         time.sleep(0.005)
 
     # Add and start a tone on top of the noise
-    dipstream.add("tone", fs, tone, channel_mapping=[2])  # right channel
-    dipstream.start("tone")
+    tone = dipstream.add(fs, tone, channel_mapping=[2])  # right channel
+    tone.start()
 
-    # Wait untl the tone ends then play noise for 3 seconds more (wait option #2: dipstream handles loop)
-    dipstream.wait_until_end("tone", plus=noise_duration_after_tone_s)
+    # Wait until the tone ends then play noise for 3 seconds more (wait option #2: dipstream handles loop)
+    tone.wait_until_end(plus=noise_duration_after_tone_s)
 
     # Stop the noise
-    dipstream.stop("noise")
+    noise.stop()
+
+    dipstream.remove(noise)
+    dipstream.remove(tone)
 
     ## Print some timing info for assessing latency and timing errors
     print(
         "NOISE: start={}, end={}, playback_duration={}s, expected={}s, error={}s".format(
-            dipstream.start_time("noise"),
-            dipstream.end_time("noise"),
-            dipstream.playback_duration("noise"),
+            noise.start_time,
+            noise.end_time,
+            noise.playback_duration,
             expected_noise_duration_s,
-            dipstream.playback_duration("noise") - expected_noise_duration_s,
+            noise.playback_duration - expected_noise_duration_s,
         )
     )
     print(
         "TONE: start={}, end={}, duration={}s, expected={}s, error={}s".format(
-            dipstream.start_time("tone"),
-            dipstream.end_time("tone"),
-            dipstream.playback_duration("tone"),
-            dipstream.data_duration("tone"),  # based on the data itself
-            dipstream.playback_duration("tone") - dipstream.data_duration("tone"),
+            tone.start_time,
+            tone.end_time,
+            tone.playback_duration,
+            tone.data_duration,  # based on the data itself
+            tone.playback_duration - tone.data_duration,
         )
     )
     print(f"Current blocksize = {dipstream.current_blocksize}")
