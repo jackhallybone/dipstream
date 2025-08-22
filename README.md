@@ -8,6 +8,8 @@ A thin wrapper for a [sounddevice](https://python-sounddevice.readthedocs.io/en/
 pip install -e .
 ```
 
+The following snippet shows how `DipStream` can start and stop playback of several audio signals ("sources") independently of each other.
+
 ```python
 from dipstream import DipStream
 
@@ -15,18 +17,16 @@ dipstream = DipStream(fs=fs, device=None, channels=[1, 2]) # default stereo devi
 
 with dipstream:
 
-    # Add and start a noise signal that will loop until stopped
+    # Add a noise signal on the left channel and a tone signal on the right
     noise = dipstream.add(fs=fs, data=my_noise, channel_mapping=[1]) # left
-    noise.start(loop=True)
+    tone = dipstream.add(fs=fs, data=my_tone, channel_mapping=[2]) # right
 
-    # Wait for the noise to start then play for 3 seconds
+    # Start the noise, looping until stopped, and wait for 3 seconds of playback
+    noise.start(loop=True)
     noise.wait_until_start(plus=3)
 
-    # Add and start a tone signal that will play until it ends
-    tone = dipstream.add(fs=fs, data=my_tone, channel_mapping=[2]) # right
+    # Start the tone and wait until 3 seconds after it has finished playing
     tone.start()
-
-    # Wait for the tone to end, then play the noise for 3 more seconds
     tone.wait_until_end(plus=3)
 
     # Stop the noise signal
@@ -37,65 +37,6 @@ with dipstream:
     dipstream.remove(tone)
 ```
 
-<!-- ## API
+## Timing
 
-### Stream
-
-Preferably use
-
-```python
-with dipstream:
-    # do something
-```
-
-alternatively, use
-
-```python
-dipstream.start()
-# do something
-dipstream.stop()
-```
-
-
-### Adding and removing sources
-
-- `add(name, fs, data, channel_mapping, replace)`: add a new source to the stream
-    - `name: str`: a name to access the source by
-    - `fs: int`: sampling rate of the audio data which is checked against the stream rate
-    - `data: np.ndarray`: mono or multichannel audio data in the shape `(n_samples, n_channels)`
-    - `channel_mapping: list[int]`: a list of channel numbers to play the source back on
-        - (the number of channels must match n_channels in the audio data unless the source is mono in which case it is repeated on the specified channels)
-    - `replace: bool`: allow or disallow the new source to overwrite an existing source with the same name
-- `remove(name: str)`: remove the named source from the stream
-- `clear_sources()`: remove all sources from the stream
-
-### Controlling playback
-
-- `start(name: str)`: start the playback of the named source
-- `stop(name: str)`: stop the playback of the named source
-
-These functions will block for a very short period until the playback of the source is actually started or stopped (usually in the next stream callback some milliseconds later).
-
-### Timings
-
-All times are based on the `sounddevice` stream clock.
-
-#### Event times
-
-- `now`: get the current stream time
-- `start_time(name: str)`: get the start time of a source, which is None if the source has not yet started
-- `end_time(name: str)`: get the end time of a source, which is None if the source has not yet ended
-
-#### Durations
-
-- `elapsed_between(start: float, end: float)`: get the elapsed time between two times
-- `data_duration(name: str)`: get the duration of a source's audio data
-- `playback_duration(name: str)`: get the duration that a source was actually playing for
-
-#### Waiting
-
-The user can manually handle waiting for playback, or the following functions can be used to wait for events and time delays.
-
-- `wait_until_time(target_time: float, plus: float)`: wait until the target time, with an optional additional delay `plus`
-- `wait_until_start(name: str, plus: float)`: wait until a source has started with an optional delay `plus`
-- `wait_until_end(name: str, plus: float)`: wait until a source has ended with an optional delay `plus` -->
+`DipStream` uses the `sounddevice` stream time as it's clock, accessed using `dipstream.now`.
