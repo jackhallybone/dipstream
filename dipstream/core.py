@@ -47,7 +47,10 @@ class DipStream:
             self._current_blocksize = frames
 
         mixed_block = self._mix_and_map_sources(
-            frames, self._stream.channels, self.now, self.fs # time["outputBufferDacTime"] is not provided by ASIO
+            frames,
+            self._stream.channels,
+            self.now,
+            self.fs,  # time["outputBufferDacTime"] is not provided by ASIO
         )
 
         if mixed_block.shape != outdata.shape:
@@ -154,8 +157,8 @@ class DipStream:
 
         # Accumulate blocks of audio from the sources that are currently playing
         for source in sources:
-            # get_next_block also handles the actual starting and stopping of sources
-            block = source.get_next_block(n_frames, block_time, fs)
+            # _get_next_block also handles the actual starting and stopping of sources
+            block = source._get_next_block(n_frames, block_time, fs)
             if block is None:
                 continue
 
@@ -174,11 +177,8 @@ class DipStream:
         """Calculate the elapsed time between two times."""
         return end - start
 
-    def wait_until_time(
-        self, target_time: float, plus: float = 0, sleep_in_loop: float = 0.005
-    ):
+    def wait_until_time(self, target_time: float, sleep_in_loop: float = 0.005):
         """Wait in a loop until a specified time, with optional additional delay."""
-        target_time += plus
         while self.now < target_time:
             time.sleep(sleep_in_loop)
 
@@ -263,9 +263,9 @@ class _Source:
 
     @property
     def is_looping(self):
-        """True if the source playback is set to loop."""
+        """True if the source is currently playing and playback is set to loop."""
         with self._lock:
-            return self._looping
+            return self._playing and self._looping
 
     def start(
         self, starting_idx: int = 0, loop: bool = False, timeout: float | None = 0.5
@@ -321,7 +321,7 @@ class _Source:
         self._start_event.wait(timeout=timeout)
 
         if plus:
-            self._dipstream.wait_until_time(self._start_time, plus)
+            self._dipstream.wait_until_time(self._start_time + plus)
 
     def wait_until_end(self, plus: float = 0, timeout: float | None = None):
         """Wait until the source has completed playback, with optional additional further wait time."""
@@ -339,10 +339,10 @@ class _Source:
         self._end_event.wait(timeout=timeout)
 
         if plus:
-            self._dipstream.wait_until_time(self._end_time, plus)
+            self._dipstream.wait_until_time(self._end_time + plus)
 
     @staticmethod
-    def get_n_frames_from_data(
+    def _get_n_frames_from_data(
         data: np.ndarray, read_idx: int, n_frames: int, wrap: bool
     ) -> tuple[np.ndarray, int, int]:
         """Get the next n_frames from data, padding with zeros or wrapping the signal at the end of the buffer."""
@@ -359,7 +359,9 @@ class _Source:
         n_frames_with_data = n_frames_from_end
 
         # If the signal in data has ended, but outdata is not complete
-        if n_frames_from_end < n_frames: # NOTE: if len(data) divisible by n_frames, end will fire next callback
+        if (
+            n_frames_from_end < n_frames
+        ):  # NOTE: if len(data) divisible by n_frames, end will fire next callback
 
             # Complete the signal with frames from the start of the signal in data
             if wrap:
@@ -375,7 +377,7 @@ class _Source:
 
         return outdata, new_read_idx, n_frames_with_data
 
-    def get_next_block(
+    def _get_next_block(
         self, n_frames: int, block_time: float, fs: int
     ) -> np.ndarray | None:
         """Get the next block of audio data, or return None if not currently playing."""
@@ -399,7 +401,7 @@ class _Source:
             looping = self._looping
 
         # Get the next frame of audio
-        block, new_read_idx, n_frames_with_data = self.get_n_frames_from_data(
+        block, new_read_idx, n_frames_with_data = self._get_n_frames_from_data(
             self._data, read_idx, n_frames, looping
         )
 
