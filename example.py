@@ -76,13 +76,13 @@ def main():
 
     # print(query_devices())
 
-    fs = 48000
+    samplerate = 48000
     device = None  # use the default output device
     channels = [1, 2]
 
-    dipstream = DipStream(fs=fs, device=device, channels=channels)
+    dipstream = DipStream(samplerate=samplerate, device=device, channels=channels)
     with dipstream:
-        audio_sequence(fs, dipstream)
+        audio_sequence(samplerate, dipstream)
 
 
 if __name__ == "__main__":

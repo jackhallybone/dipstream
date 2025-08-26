@@ -17,21 +17,25 @@ def query_devices():
 class DipStream:
     """A multi-source stream controller using sounddevice and _Source objects."""
 
-    def __init__(
-        self, fs: int, device: str | None, channels: list[int], blocksize: int = 0
-    ):
+    def __init__(self, **kwargs):
         """Initialise a Dipstream instance, validating and setting up the underlying sounddevice.OutputStream."""
+
+        if "callback" in kwargs:
+            raise ValueError(
+                "Cannot accept a callback. The callback is defined by DipStream."
+            )
+
+        sd.check_output_settings(
+            samplerate=kwargs.get("samplerate"),
+            device=kwargs.get("device"),
+            channels=kwargs.get("channels"),
+        )
 
         self._lock = threading.Lock()
 
-        sd.check_output_settings(samplerate=fs, device=device, channels=max(channels))
-
-        self._sources: set[_Source] = set()  # track the sources in the stream
+        self._sources: set[_Source] = set()  # to track the sources
         self._stream = sd.OutputStream(
-            samplerate=fs,
-            device=device,
-            channels=max(channels),
-            blocksize=blocksize,
+            **kwargs,
             callback=self._callback,
         )
         self._current_blocksize = 0
@@ -50,7 +54,7 @@ class DipStream:
             frames,
             self._stream.channels,
             self.now,
-            self.fs,  # time["outputBufferDacTime"] is not provided by ASIO
+            self.samplerate,  # time["outputBufferDacTime"] is not provided by ASIO
         )
 
         if mixed_block.shape != outdata.shape:
@@ -88,7 +92,7 @@ class DipStream:
         return self._stream.time
 
     @property
-    def fs(self) -> int:
+    def samplerate(self) -> int:
         """Get the sample rate of the stream."""
         return self._stream.samplerate
 
@@ -100,26 +104,34 @@ class DipStream:
 
     # Sources
 
-    def add(self, fs: int, data: np.ndarray, channel_mapping: list[int]) -> "_Source":
+    def add(
+        self, samplerate: int, data: np.ndarray, channel_mapping: list[int]
+    ) -> "_Source":
         """Add a source to the collection and validate the signal and playback properties."""
-        if fs != self.fs:
+
+        if samplerate != self.samplerate:
             raise ValueError("Source sample rate does match stream sample rate.")
-        if data.ndim != 2:
-            raise ValueError(
-                "Audio signal must always be of shape (n_samples, n_channels)."
-            )
+
         if min(channel_mapping) < 1 or max(channel_mapping) > self._stream.channels:
             raise ValueError(
                 f"Channel numbers in mapping must be between 1 and {self._stream.channels}"
             )
+
         if len(channel_mapping) != len(set(channel_mapping)):
             raise ValueError("Channel numbers cannot be repeated in mapping.")
+
+        if data.ndim == 1:
+            data = data[:, np.newaxis]
+
+        if data.shape[1] > data.shape[0]:
+            raise ValueError("Audio signal must be of shape (n_samples, n_channels)")
+
         if data.shape[1] > 1 and data.shape[1] != len(channel_mapping):
             raise ValueError(
-                "Number of channels mapped must equal the number of channels in the audio signal."
+                "Number of channels in channel_mapping must equal the number of channels in data unless its mono."
             )
 
-        source = _Source(self, fs, data, channel_mapping)
+        source = _Source(self, samplerate, data, channel_mapping)
 
         with self._lock:
             self._sources.add(source)
@@ -144,7 +156,7 @@ class DipStream:
             self._sources.clear()
 
     def _mix_and_map_sources(
-        self, n_frames: int, n_channels: int, block_time: float, fs: int
+        self, n_frames: int, n_channels: int, block_time: float, samplerate: int
     ) -> np.ndarray:
         """Mix the output of all sources, mapped to channels, into one output block."""
 
@@ -158,7 +170,7 @@ class DipStream:
         # Accumulate blocks of audio from the sources that are currently playing
         for source in sources:
             # _get_next_block also handles the actual starting and stopping of sources
-            block = source._get_next_block(n_frames, block_time, fs)
+            block = source._get_next_block(n_frames, block_time, samplerate)
             if block is None:
                 continue
 
@@ -189,7 +201,7 @@ class _Source:
     def __init__(
         self,
         dipstream: "DipStream",
-        fs: int,
+        samplerate: int,
         data: np.ndarray,
         channel_mapping: list[int],
     ):
@@ -198,7 +210,7 @@ class _Source:
         self._lock = threading.Lock()
 
         self._dipstream = dipstream
-        self._fs = fs
+        self._samplerate = samplerate
         self._data = data
         self._channel_mapping = channel_mapping
 
@@ -221,14 +233,14 @@ class _Source:
             )
 
     @property
-    def fs(self):
+    def samplerate(self):
         """The source's sample rate."""
-        return self._fs
+        return self._samplerate
 
     @property
     def data_duration(self):
         """The duration of the source's signal in seconds."""
-        return self._data.shape[0] / self._fs
+        return self._data.shape[0] / self._samplerate
 
     @property
     def playback_duration(self):
@@ -378,7 +390,7 @@ class _Source:
         return outdata, new_read_idx, n_frames_with_data
 
     def _get_next_block(
-        self, n_frames: int, block_time: float, fs: int
+        self, n_frames: int, block_time: float, samplerate: int
     ) -> np.ndarray | None:
         """Get the next block of audio data, or return None if not currently playing."""
 
@@ -412,7 +424,7 @@ class _Source:
             if n_frames_with_data < n_frames:
                 self._playing = False
                 if self._end_time is None:
-                    self._end_time = block_time + (n_frames_with_data / fs)
+                    self._end_time = block_time + (n_frames_with_data / samplerate)
                     self._end_event.set()
 
         return block
