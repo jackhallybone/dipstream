@@ -165,6 +165,9 @@ class DipStream:
         if len(channel_mapping) != len(set(channel_mapping)):
             raise ValueError("Channel numbers cannot be repeated in mapping.")
 
+        if not np.issubdtype(data, np.floating):
+            raise TypeError("Audio signal must be of type/subtype float.")
+
         # Internally expand mono (n,) shape to (n, 1) to allow multichannel (repeated) broadcasting
         if data.ndim == 1:
             data = data[:, np.newaxis]
@@ -238,9 +241,9 @@ class _Source:
         self._playing = False
         self._loop = False
         self._read_idx = 0
-        self._start_time = None
+        self._start_time: float | None = None
         self._start_event = threading.Event()
-        self._end_time = None
+        self._end_time: float | None = None
         self._end_event = threading.Event()
 
     def _must_exist_in_stream(self):
@@ -319,9 +322,9 @@ class _Source:
 
         # Wait for the actual start to happen
         if not self._start_event.wait(timeout=timeout):
-            raise RuntimeError(f"Source did not start on time (after {timeout}s)")
+            raise TimeoutError(f"Source did not start on time (after {timeout}s)")
 
-    def stop(self, timeout: float | None = None):
+    def stop(self, timeout: float | None = 0.5):
         """Stop source playback.
 
         Sets flags to indicate that the source should not playback when the stream requests it.
@@ -335,7 +338,7 @@ class _Source:
 
         # Wait for the actual stop to happen
         if not self._end_event.wait(timeout=timeout):
-            raise RuntimeError(f"Source did not stop on time (after {timeout}s).")
+            raise TimeoutError(f"Source did not stop on time (after {timeout}s).")
 
     def wait_until_start(self, plus: float = 0, timeout: float | None = None):
         """Wait until the source has started playback, with optional additional further wait time."""
@@ -348,9 +351,12 @@ class _Source:
                     "Cannot wait for a source start when start() has not been called."
                 )
 
-        self._start_event.wait(timeout=timeout)
+        if not self._start_event.wait(timeout=timeout):
+            raise TimeoutError(
+                f"Timed out waiting for source to start (after {timeout}s)."
+            )
 
-        if plus:
+        if plus and self._start_time is not None:
             self._dipstream.wait_until_time(self._start_time + plus)
 
     def wait_until_end(self, plus: float = 0, timeout: float | None = None):
@@ -366,7 +372,10 @@ class _Source:
             if self._loop:
                 raise RuntimeError("Cannot wait until a looping source has ended.")
 
-        self._end_event.wait(timeout=timeout)
+        if not self._end_event.wait(timeout=timeout):
+            raise TimeoutError(
+                f"Timed out waiting for source to end (after {timeout}s)."
+            )
 
-        if plus:
+        if plus and self._end_time is not None:
             self._dipstream.wait_until_time(self._end_time + plus)

@@ -59,6 +59,12 @@ with dipstream:
     dipstream.remove(source_1000Hz)
 ```
 
+### Output Mix
+
+Each active source is mixed (+) into the output on the channels specified. It is necessary to **make sure the output mix does not clip** (exceed the -1:+1 range) by controlling the amplitude of each source. Currently clipping will throw and error and end the stream.
+
+The output channels which sources are mixed into and played back on can be set using the `channel_mapping` argument. This does not need to be continuous, for example a stereo source could be mapped to `[1, 5]`. Mono sources can be mapped to multiple channels, and their data will be reproduced on each one.
+
 ## Timing
 
 All timing in `DipStream` uses the [sounddevice stream time](https://python-sounddevice.readthedocs.io/en/0.3.15/api/streams.html#sounddevice.Stream.time). This can be accessed using `dipstream.now`.
@@ -82,7 +88,8 @@ Instantiate using `DipStream(...)`, where the arguments match the [sounddevice O
     - `start()` starts the stream.
     - `stop()` stops the stream.
 - `add(samplerate, data, channel_mapping)` adds a new audio signal to the stream as a new source with its own data and channel mapping.
-    - `channel_mapping` is the mapping between source data channels and output channels and follows the format of the [sounddevice `play()` `mapping` argument](https://python-sounddevice.readthedocs.io/en/0.3.15/api/convenience-functions.html#sounddevice.play).
+    - `data` must be of type/subtype float and shape (n_samples,) or (n_samples, n_channels).
+    - `channel_mapping` is the mapping between source data channels and output channels and follows the format of the [sounddevice `play()` `mapping` argument](https://python-sounddevice.readthedocs.io/en/0.3.15/api/convenience-functions.html#sounddevice.play). Mono audio can be mapped (repeated on) multiple channels.
 - `remove(source)` removes a source from the stream.
 - `clear_sources()` removes all sources from the stream.
 - `elapsed_between(start, end)` calculates the time between two timestamps.
