@@ -40,34 +40,79 @@ class DipStream:
         )
         self._current_blocksize = 0
 
+        # Preallocate an oversized output block
+        self._outdata_mix = np.zeros((16384, self._stream.channels))
+
     # Stream
 
     def _callback(self, outdata, frames, time, status):
         """Trigger the getting of the next block of audio from all sources and pass it to the sound device."""
-        if status:
-            print(f"Stream status: {status}")
-
         with self._lock:
             self._current_blocksize = frames
 
-        mixed_block = self._mix_and_map_sources(
-            frames,
-            self._stream.channels,
-            self.now,
-            self.samplerate,  # time["outputBufferDacTime"] is not provided by ASIO
-        )
+        # Zero the output arrays
+        outdata[:] = 0
+        self._outdata_mix[:] = 0
 
-        if mixed_block.shape != outdata.shape:
+        block_time = self.now  # time["outputBufferDacTime"] is not provided by ASIO
+
+        sources = list(self._sources)  # shallow copy snapshot of the current sources
+
+        for source in sources:
+
+            with source._lock:
+                # If the source is not playing, skip it
+                if not source._playing:
+                    # But first, mark the source as ended if it is not already (ie, `stop()` has just been called)
+                    if source._end_time is None:
+                        source._end_time = block_time
+                        source._end_event.set()
+                    continue
+
+                # Mark the source as started if it is not already (ie, `start()` has just been called)
+                if source._start_time is None:
+                    source._start_time = block_time
+                    source._start_event.set()
+
+            # Mix a full block of frames from the source's data into outdata, if there are enough frames left
+            if source._read_idx + frames < source._data.shape[0]:
+                self._outdata_mix[
+                    :frames, source._channel_mapping_indices
+                ] += source._data[source._read_idx : source._read_idx + frames, :]
+                source._read_idx += frames
+
+            else:
+                # Else, mix all remaining frames from the source's data into outdata
+                frames_remaining = source._data.shape[0] - source._read_idx
+                self._outdata_mix[
+                    :frames_remaining, source._channel_mapping_indices
+                ] += source._data[
+                    source._read_idx : source._read_idx + frames_remaining, :
+                ]
+
+                # If the source should loop, complete the block by mixing the outstanding frames from the data into outdata
+                if source._loop:
+                    frames_outstanding = frames - frames_remaining
+                    self._outdata_mix[
+                        frames_remaining : frames_remaining + frames_outstanding,
+                        source._channel_mapping_indices,
+                    ] += source._data[:frames_outstanding, :]
+                    source._read_idx = frames_outstanding
+
+                # Else, mark the source as not playing back and ended
+                else:
+                    end_time = block_time + (frames_remaining / self.samplerate)
+                    with source._lock:
+                        source._playing = False
+                        source._end_time = end_time
+                        source._end_event.set()
+
+        if np.max(self._outdata_mix) > 1.0 or np.min(self._outdata_mix) < -1.0:
             raise ValueError(
-                f"Output block shape error ({mixed_block.shape} should be {outdata.shape})."
+                f"Output block contains amplitude values above 1 ({np.max(np.abs(self._outdata_mix))})"
             )
 
-        if np.any(np.abs(mixed_block) > 1):
-            raise ValueError(
-                f"Output block contains amplitude values above 1 ({np.max(np.abs(mixed_block))})"
-            )
-
-        outdata[:] = mixed_block
+        outdata[:] = self._outdata_mix[:frames, :]
 
     def __enter__(self):
         """Forward the enter function to the sounddevice stream. Implies self.start_stream()."""
@@ -120,6 +165,7 @@ class DipStream:
         if len(channel_mapping) != len(set(channel_mapping)):
             raise ValueError("Channel numbers cannot be repeated in mapping.")
 
+        # Internally expand mono (n,) shape to (n, 1) to allow multichannel (repeated) broadcasting
         if data.ndim == 1:
             data = data[:, np.newaxis]
 
@@ -128,7 +174,7 @@ class DipStream:
 
         if data.shape[1] > 1 and data.shape[1] != len(channel_mapping):
             raise ValueError(
-                "Number of channels in channel_mapping must equal the number of channels in data unless its mono."
+                "Number of channels in channel_mapping must equal the number of channels in data unless it is mono."
             )
 
         source = _Source(self, samplerate, data, channel_mapping)
@@ -154,34 +200,6 @@ class DipStream:
         """Remove all sources from the stream."""
         with self._lock:
             self._sources.clear()
-
-    def _mix_and_map_sources(
-        self, n_frames: int, n_channels: int, block_time: float, samplerate: int
-    ) -> np.ndarray:
-        """Mix the output of all sources, mapped to channels, into one output block."""
-
-        mix = np.zeros((n_frames, n_channels))
-
-        with self._lock:
-            sources = list(
-                self._sources
-            )  # shallow snapshot of set, sources handle their internal locking
-
-        # Accumulate blocks of audio from the sources that are currently playing
-        for source in sources:
-            # _get_next_block also handles the actual starting and stopping of sources
-            block = source._get_next_block(n_frames, block_time, samplerate)
-            if block is None:
-                continue
-
-            if block.shape[1] == 1:
-                # Mono sources are repeated on each output channel
-                mix[:, source._channel_mapping_indices] += block
-            else:
-                # Multichannel sources map source channel to output channel
-                mix[:, source._channel_mapping_indices] += block[:, :]
-
-        return mix
 
     # Timing
 
@@ -218,7 +236,7 @@ class _Source:
         self._channel_mapping_indices = np.array(self._channel_mapping) - 1
 
         self._playing = False
-        self._looping = False
+        self._loop = False
         self._read_idx = 0
         self._start_time = None
         self._start_event = threading.Event()
@@ -277,7 +295,7 @@ class _Source:
     def is_looping(self):
         """True if the source is currently playing and playback is set to loop."""
         with self._lock:
-            return self._playing and self._looping
+            return self._playing and self._loop
 
     def start(
         self, starting_idx: int = 0, loop: bool = False, timeout: float | None = 0.5
@@ -294,7 +312,7 @@ class _Source:
         self._end_event.clear()
         with self._lock:
             self._playing = True
-            self._looping = loop
+            self._loop = loop
             self._read_idx = starting_idx
             self._start_time = None
             self._end_time = None
@@ -313,7 +331,7 @@ class _Source:
         # Set flags to schedule the source to stop playing on the stream
         with self._lock:
             self._playing = False
-            self._looping = False
+            self._loop = False
 
         # Wait for the actual stop to happen
         if not self._end_event.wait(timeout=timeout):
@@ -345,86 +363,10 @@ class _Source:
                 raise RuntimeError(
                     "Cannot wait for a source to end when it has not yet started."
                 )
-            if self._looping:
+            if self._loop:
                 raise RuntimeError("Cannot wait until a looping source has ended.")
 
         self._end_event.wait(timeout=timeout)
 
         if plus:
             self._dipstream.wait_until_time(self._end_time + plus)
-
-    @staticmethod
-    def _get_n_frames_from_data(
-        data: np.ndarray, read_idx: int, n_frames: int, wrap: bool
-    ) -> tuple[np.ndarray, int, int]:
-        """Get the next n_frames from data, padding with zeros or wrapping the signal at the end of the buffer."""
-
-        data_n_frames, data_n_channels = data.shape
-        outdata = np.zeros((n_frames, data_n_channels))
-        n_frames_from_end = min(data_n_frames - read_idx, n_frames)
-
-        # Get as many frames as from the signal in data possible
-        outdata[:n_frames_from_end, :] = data[
-            read_idx : read_idx + n_frames_from_end, :
-        ]
-        new_read_idx = read_idx + n_frames_from_end
-        n_frames_with_data = n_frames_from_end
-
-        # If the signal in data has ended, but outdata is not complete
-        if (
-            n_frames_from_end < n_frames
-        ):  # NOTE: if len(data) divisible by n_frames, end will fire next callback
-
-            # Complete the signal with frames from the start of the signal in data
-            if wrap:
-                n_frames_from_start = n_frames - n_frames_from_end
-                outdata[n_frames_from_end:, :] = data[:n_frames_from_start, :]
-                new_read_idx = n_frames_from_start
-                n_frames_with_data = n_frames
-
-            # Mark the signal as ended
-            else:
-                new_read_idx = data_n_frames
-                n_frames_with_data = n_frames_from_end
-
-        return outdata, new_read_idx, n_frames_with_data
-
-    def _get_next_block(
-        self, n_frames: int, block_time: float, samplerate: int
-    ) -> np.ndarray | None:
-        """Get the next block of audio data, or return None if not currently playing."""
-
-        with self._lock:
-
-            # If not playing but no end time, stop() has been called so set the end and return None
-            if not self._playing:
-                if self._end_time is None:
-                    self._end_time = block_time
-                    self._end_event.set()
-                return None
-
-            # If playing, but no start time, start() has been called so set the start
-            if self._start_time is None:
-                self._start_time = block_time
-                self._start_event.set()
-
-            # Copy within lock
-            read_idx = self._read_idx
-            looping = self._looping
-
-        # Get the next frame of audio
-        block, new_read_idx, n_frames_with_data = self._get_n_frames_from_data(
-            self._data, read_idx, n_frames, looping
-        )
-
-        with self._lock:
-            self._read_idx = new_read_idx
-
-            # If the signal has ended, update source attributes to indicate a stop/end
-            if n_frames_with_data < n_frames:
-                self._playing = False
-                if self._end_time is None:
-                    self._end_time = block_time + (n_frames_with_data / samplerate)
-                    self._end_event.set()
-
-        return block
