@@ -54,7 +54,11 @@ class DipStream:
         outdata[:] = 0
         self._outdata_mix[:] = 0
 
-        block_time = self.now  # time["outputBufferDacTime"] is not provided by ASIO
+        # Ideally set block_time to the actual output time but fall back to request/callback time
+        if time.currentTime > 0:
+            block_time = time.outputBufferDacTime
+        else:
+            block_time = self.now
 
         sources = list(self._sources)  # shallow copy snapshot of the current sources
 

@@ -67,9 +67,15 @@ The output channels which sources are mixed into and played back on can be set u
 
 ## Timing
 
-All timing in `DipStream` uses the [sounddevice stream time](https://python-sounddevice.readthedocs.io/en/0.3.15/api/streams.html#sounddevice.Stream.time). This can be accessed using `dipstream.now`.
+All timing in `DipStream` uses the [sounddevice stream time](https://python-sounddevice.readthedocs.io/en/0.3.15/api/streams.html#sounddevice.Stream.time) clock. A timestamp can be taken using `dipstream.now`.
 
-For compatibility with ASIO drivers, output block time is taken as the time the callback is fired, rather than the time that that block of audio will play (ie, not the callback `time["outputBufferDacTime"]`).
+Source `start_time` and `stop_time` timestamps are taken in the audio callback to best reflect the actual output (rather than when `start()` and `stop()` are called).
+
+### ASIO
+
+Ideally the timing in the callback is the actual output time of that block (`time.outputBufferDacTime`). However, ASIO does not provide this information and so the current time (`dipstream.now`) is used as a fallback instead.
+
+Many factors should impact the difference, but testing a short stream showed in 285 callbacks, `now` was ahead out the `outputBufferDacTime` by 0.173-182s (mean=0.177s).
 
 ### Playback timestamps
 
