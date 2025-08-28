@@ -41,7 +41,7 @@ class DipStream:
         self._current_blocksize = 0
 
         # Preallocate an oversized output block
-        self._outdata_mix = np.zeros((16384, self._stream.channels))
+        self._outdata_mix = np.zeros((16384, self.channels))
 
     # Stream
 
@@ -142,6 +142,11 @@ class DipStream:
         return self._stream.samplerate
 
     @property
+    def channels(self) -> int:
+        """Get the number of channels in the stream."""
+        return self._stream.channels
+
+    @property
     def current_blocksize(self) -> int:
         """Get the most recent blocksize of the stream (fixes or variable streams)."""
         with self._lock:
@@ -157,15 +162,15 @@ class DipStream:
         if samplerate != self.samplerate:
             raise ValueError("Source sample rate does match stream sample rate.")
 
-        if min(channel_mapping) < 1 or max(channel_mapping) > self._stream.channels:
+        if min(channel_mapping) < 1 or max(channel_mapping) > self.channels:
             raise ValueError(
-                f"Channel numbers in mapping must be between 1 and {self._stream.channels}"
+                f"Channel numbers in mapping must be between 1 and {self.channels}"
             )
 
         if len(channel_mapping) != len(set(channel_mapping)):
             raise ValueError("Channel numbers cannot be repeated in mapping.")
 
-        if not np.issubdtype(data, np.floating):
+        if not np.issubdtype(data.dtype, np.floating):
             raise TypeError("Audio signal must be of type/subtype float.")
 
         # Internally expand mono (n,) shape to (n, 1) to allow multichannel (repeated) broadcasting

@@ -15,7 +15,7 @@ The following snippet shows how `DipStream` can start and stop playback of sever
 ```python
 import numpy as np
 
-from dipstream import DipStream
+import dipstream as ds
 
 
 samplerate = 48000
@@ -25,7 +25,7 @@ t = np.linspace(0, 1, int(np.ceil(samplerate * 1)), endpoint=False)
 tone_500 = 0.75 * np.sin(2 * np.pi * 500 * t)
 tone_1000 = 0.25 * np.sin(2 * np.pi * 1000 * t)
 
-dipstream = DipStream(samplerate=samplerate, channels=2)  # use default stereo device
+dipstream = ds.DipStream(samplerate=samplerate, channels=2)  # use default stereo device
 
 with dipstream:
 
@@ -81,41 +81,42 @@ The same is true for `stop()`. The `playback_duration` property holds the actual
 
 ### `DipStream`
 
-Instantiate using `DipStream(...)`, where the arguments match the [sounddevice OutputStream](https://python-sounddevice.readthedocs.io/en/0.3.15/api/streams.html#sounddevice.OutputStream) arguments.
+Instantiate using `DipStream(...)`, where the arguments match the [sounddevice OutputStream](https://python-sounddevice.readthedocs.io/en/0.3.15/api/streams.html#sounddevice.OutputStream) arguments. For example `DipStream(samplerate=48000, device="ASIO Fireface", channels=8)`.
 
 **Methods:**
 - Preferably use the `with` context to manage the lifecycle. Alternatively,
     - `start()` starts the stream.
     - `stop()` stops the stream.
-- `add(samplerate, data, channel_mapping)` adds a new audio signal to the stream as a new source with its own data and channel mapping.
+- `add(samplerate: int, data: np.ndarray, channel_mapping: list[int])` adds a new audio signal to the stream and returns the source instance.
     - `data` must be of type/subtype float and shape (n_samples,) or (n_samples, n_channels).
     - `channel_mapping` is the mapping between source data channels and output channels and follows the format of the [sounddevice `play()` `mapping` argument](https://python-sounddevice.readthedocs.io/en/0.3.15/api/convenience-functions.html#sounddevice.play). Mono audio can be mapped (repeated on) multiple channels.
 - `remove(source)` removes a source from the stream.
 - `clear_sources()` removes all sources from the stream.
-- `elapsed_between(start, end)` calculates the time between two timestamps.
-- `wait_until_time(time, sleep)` sleeps in a loop until the target time.
+- `elapsed_between(start: float, end: float)` calculates the time between two timestamps.
+- `wait_until_time(time: float, sleep: float)` sleeps in a loop until the target time.
 
 **Properties (readonly):**
-- `now` is the current [sounddevice stream time](https://python-sounddevice.readthedocs.io/en/0.3.15/api/streams.html#sounddevice.Stream.time).
-- `samplerate` is the stream sample rate.
-- `current_blocksize` is the most recent blocksize in the audio callback ([which could vary between callbacks](https://python-sounddevice.readthedocs.io/en/0.3.15/api/streams.html#sounddevice.Stream.blocksize)).
+- `now: float` is the current [sounddevice stream time](https://python-sounddevice.readthedocs.io/en/0.3.15/api/streams.html#sounddevice.Stream.time).
+- `samplerate: int` is the stream sample rate.
+- `channels: int` is the number of channels available in the stream.
+- `current_blocksize: int` is the most recent blocksize in the audio callback ([which could vary between callbacks](https://python-sounddevice.readthedocs.io/en/0.3.15/api/streams.html#sounddevice.Stream.blocksize)).
 
 ### Sources
 
 Sources should **not** be instantiated directly, only by using the `add()` method the stream.
 
 **Methods:**
-- `start(idx, loop)` starts playback of the source, with an optional starting position in the signal and flag to indicate if the signals should loop or stop at the end.
+- `start(idx: int, loop: bool)` starts playback of the source, with an optional starting position in the signal and flag to indicate if the signals should loop or stop at the end.
 - `stop()` stops playback of the source.
-- `wait_until_start(plus)` blocks until playback of the source has started, with optional additional delay after the start time.
-- `wait_until_start(plus)` blocks until playback of the source has stopped, with optional additional delay after the stop time.
+- `wait_until_start(plus: float)` blocks until playback of the source has started, with optional additional delay after the start time.
+- `wait_until_start(plus: float)` blocks until playback of the source has stopped, with optional additional delay after the stop time.
 
 **Properties (readonly):**
-- `samplerate` the sample rate of the source, which must match that of the stream.
-- `channel_mapping` the mapping between source data channels and output channels.
-- `start_time` the timestamp of the start of playback, which will be None if it has not yet started.
-- `end_time` the timestamp of the end of playback, which will be None if it has not yet ended.
-- `data_duration` the duration of the audio signal in seconds (ie, duration of the samples).
-- `playback_duration` the duration that the source was played back for (ie, between the start and end timestamps).
-- `is_playing` is True if the source is currently playing.
-- `is_looping` is True if the source is currently playing and set to loop.
+- `samplerate: int` the sample rate of the source, which must match that of the stream.
+- `channel_mapping: list[int]` the mapping between source data channels and output channels.
+- `start_time: float` the timestamp of the start of playback, which will be None if it has not yet started.
+- `end_time: float` the timestamp of the end of playback, which will be None if it has not yet ended.
+- `data_duration: float` the duration of the audio signal in seconds (ie, duration of the samples).
+- `playback_duration: float` the duration that the source was played back for (ie, between the start and end timestamps).
+- `is_playing: bool` is True if the source is currently playing.
+- `is_looping: bool` is True if the source is currently playing and set to loop.
