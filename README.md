@@ -41,10 +41,10 @@ with dipstream:
     source_500Hz.start(loop=True)
 
     # After 2 seconds of playback, start the 1000Hz tone
-    source_1000Hz.start(at=source_500Hz.start_time + 2)
+    source_1000Hz.start(at_time=source_500Hz.start_time + 2)
 
     # Stop the 500Hz tone 2 seconds after the 1000Hz tone ends
-    source_500Hz.stop(stop_with=source_1000Hz, with_offset=2)
+    source_500Hz.stop(on_end=source_1000Hz, offset=2)
 
     # Print and example of the timing
     print(f" 500Hz: expected 5s, played for {source_500Hz.playback_duration:.6f}s")
@@ -73,7 +73,7 @@ For consistency, the source `start_time` and `stop_time` properties use the esti
 
 The `start()` and `stop()` functions block until change is estimated on the output. When called without any delay arguments, it should block a little longer than the latency (`dipstream.latency`).
 
-When called with the `at` time argument, the delay time is reduced by the latency in an attempt to schedule the actual change as close to the target time as possible. When called with the `..._with` argument, the calling source should be scheduled in the callback after its target so the delta should be one callback duration. In these cases, the blocking should be only a little longer than the intentional delay.
+When called with the `at_time` time argument, the delay time is reduced by the latency in an attempt to schedule the actual change as close to the target time as possible. When called with one of the `on_start` or `on_end` arguments, the calling source will be scheduled based on the target scheduling, so the delta should be one callback duration. In these cases, the blocking should be only a little longer than the intentional delay.
 
 Consequently, if the start and stop are scheduled correctly, the error in `playback_duration` compared to the expected duration should be kept to a minimum -- in theory a maximum of 1 block duration, although the latency correction is not definite.
 
@@ -111,8 +111,8 @@ Instantiate using `DipStream(...)`, where the arguments match the [sounddevice O
 Sources should **not** be instantiated directly, only by using the `add()` method the stream.
 
 **Methods:**
-- `start(at: float | None, starts_with: _Source | None, with_offset: float | None, loop: bool, starting_idx: int, timeout: float)` starts the playback of a source, which can `loop` and start from a `starting_idx` in the signal. Schedules the start immediately or delays to start `at` a time, or `start_with` the start of another source plus an option `with_offset`. See the **Timing** section for more information.
-- `stop(at: float | None, starts_with: _Source | None, with_offset: float | None, timeout: float)` stops the playback of a source. Schedules the stop immediately or delays to stop `at` a time, or `stop_with` the stop of another source plus an option `with_offset`. See the **Timing** section for more information.
+- `start(at_time: float | None, on_start: _Source | None, on_end: _Source | None, offset: float | None, loop: bool, starting_idx: int, timeout: float)` starts the playback of a source, which can `loop` and start from a `starting_idx` in the signal. Schedules the start immediately or at a given time `at_time`, or based on another source using `on_start` and `on_end`, plus an optional `offset` duration. See the **Timing** section for more information.
+- `stop(at_time: float | None, on_start: _Source | None, on_end: _Source | None, offset: float | None, timeout: float)` stops the playback of a source. Schedules the start immediately or at a given time `at_time`, or based on another source using `on_start` and `on_end`, plus an optional `offset` duration. See the **Timing** section for more information.
 
 **Properties (readonly):**
 - `samplerate: int` the sample rate of the source, which must match that of the stream.

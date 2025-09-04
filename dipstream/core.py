@@ -313,36 +313,53 @@ class _Source:
         with self._lock:
             return self._playing and self._loop
 
+    def _wait_until_time_or_event(
+        self,
+        at_time: float | None,
+        on_start: _Source | None,
+        on_end: _Source | None,
+        offset: float | None
+    ):
+        """Wait for any time delays or the events from other sources to trigger."""
+
+        if len([a for a in (at_time, on_start, on_end) if a is not None]) > 1:
+            raise ValueError(
+                "Can only schedule by one of at_time, on_start or on_end at a time."
+            )
+
+        if on_start == self or on_end == self:
+            raise ValueError("Cannot schedule on self.")
+
+        if at_time is not None:
+            # Wait for the scheduled starting time, accounting for starting latency
+            self._dipstream.wait_until_time(at_time - self._dipstream.latency)
+        elif on_start is not None:
+            # Wait for the start event of the other source (when it's start is scheduled)
+            on_start._start_event.wait()
+        elif on_end is not None:
+            # Wait for the end event of the other source (when it's end is scheduled)
+            on_end._end_event.wait()
+
+        if offset is not None:
+            # Wait for a further offset after the other source has been scheduled to start
+            self._dipstream.wait_until_time(self._dipstream.now + offset)
+
     def start(
         self,
-        at: float | None = None,
-        start_with: _Source | None = None,
-        with_offset: float | None = None,
+        at_time: float | None = None,
+        on_start: _Source | None = None,
+        on_end: _Source | None = None,
+        offset: float | None = None,
         loop: bool = False,
         starting_idx: int = 0,
         timeout: float | None = 0.5,
     ):
         """Start source playback; immediately, at a given time, or with another source. Blocks until the start hits the DAC."""
 
-        if at is not None and (start_with is not None or with_offset is not None):
-            raise ValueError(
-                "Cannot schedule to start both at a time and with another source."
-            )
-
-        if start_with == self:
-            raise ValueError("Cannot schedule to start with self.")
-
         self._must_exist_in_stream()
 
-        if at is not None:
-            # Wait for the scheduled starting time, accounting for starting latency
-            self._dipstream.wait_until_time(at - self._dipstream.latency)
-        elif start_with is not None:
-            # Wait for the start event of the other source (when it's start is scheduled)
-            start_with._start_event.wait()
-            if with_offset:
-                # Wait for a further offset after the other source has been scheduled to start
-                self._dipstream.wait_until_time(self._dipstream.now + with_offset)
+        # Wait for any delays or triggers before starting
+        self._wait_until_time_or_event(at_time, on_start, on_end, offset)
 
         # Set flags to schedule the source to start playing on the stream
         self._start_event.clear()
@@ -361,33 +378,23 @@ class _Source:
         # Wait for the start to actually hit the DAC (ie, wait for latency)
         with self._lock:
             start_time = self._start_time  # includes the latency of the system
-        self._dipstream.wait_until_time(start_time)
+        if start_time is not None:
+            self._dipstream.wait_until_time(start_time)
 
     def stop(
         self,
-        at: float | None = None,
-        stop_with: _Source | None = None,
-        with_offset: float | None = None,
+        at_time: float | None = None,
+        on_start: _Source | None = None,
+        on_end: _Source | None = None,
+        offset: float | None = None,
         timeout: float | None = 0.5,
     ):
         """Stop source playback; immediately, at a given time, or with another source. Blocks until the end hits the DAC."""
 
-        if at is not None and (stop_with is not None or with_offset is not None):
-            raise ValueError(
-                "Cannot schedule a stop both at a time and with another source."
-            )
-
         self._must_exist_in_stream()
 
-        if at is not None:
-            # Wait for the scheduled stopping time, accounting for stopping latency
-            self._dipstream.wait_until_time(at - self._dipstream.latency)
-        elif stop_with is not None:
-            # Wait for the end event of the other source (when it's stop is scheduled)
-            stop_with._end_event.wait()
-            if with_offset:
-                # Wait for a further offset after the other source has been scheduled to stop
-                self._dipstream.wait_until_time(self._dipstream.now + with_offset)
+        # Wait for any delays or triggers before stopping
+        self._wait_until_time_or_event(at_time, on_start, on_end, offset)
 
         # Set flags to schedule the source to stop playing on the stream
         with self._lock:
@@ -401,4 +408,5 @@ class _Source:
         # Wait for the stop to actually hit the DAC (ie, wait for latency)
         with self._lock:
             end_time = self._end_time  # includes the latency of the system
-        self._dipstream.wait_until_time(end_time)
+        if end_time is not None:
+            self._dipstream.wait_until_time(end_time)
