@@ -223,10 +223,37 @@ class DipStream:
         """Calculate the elapsed time between two times."""
         return end - start
 
-    def wait_until_time(self, target_time: float, sleep_in_loop: float = 0.005):
-        """Wait in a loop until a specified time, with optional additional delay."""
-        while self.now < target_time:
-            time.sleep(sleep_in_loop)
+    def wait_until(
+        self,
+        time_is: float | None = None,
+        start_of: _Source | None = None,
+        end_of: _Source | None = None,
+        offset: float | None = None,
+        sleep_in_loop: float = 0.005
+    ):
+        """Wait until a specified time or a _Source events fires."""
+
+        if len([a for a in (time_is, start_of, end_of) if a is not None]) > 1:
+            raise ValueError(
+                "Can only schedule by one of time_is, start_of or end_of at a time."
+            )
+
+        if time_is is not None:
+            # Wait for the scheduled starting time
+            while self.now < time_is:
+                time.sleep(sleep_in_loop)
+        elif start_of is not None:
+            # Wait for the start event of the source (when it's start is scheduled)
+            start_of._start_event.wait()
+        elif end_of is not None:
+            # Wait for the end event of the source (when it's end is scheduled)
+            end_of._end_event.wait()
+
+        if offset is not None:
+            # Wait for a further time offset
+            offset_time = self.now + offset
+            while self.now < offset_time:
+                time.sleep(sleep_in_loop)
 
 
 class _Source:
@@ -313,37 +340,6 @@ class _Source:
         with self._lock:
             return self._playing and self._loop
 
-    def _wait_until_time_or_event(
-        self,
-        at_time: float | None,
-        on_start: _Source | None,
-        on_end: _Source | None,
-        offset: float | None
-    ):
-        """Wait for any time delays or the events from other sources to trigger."""
-
-        if len([a for a in (at_time, on_start, on_end) if a is not None]) > 1:
-            raise ValueError(
-                "Can only schedule by one of at_time, on_start or on_end at a time."
-            )
-
-        if on_start == self or on_end == self:
-            raise ValueError("Cannot schedule on self.")
-
-        if at_time is not None:
-            # Wait for the scheduled starting time, accounting for starting latency
-            self._dipstream.wait_until_time(at_time - self._dipstream.latency)
-        elif on_start is not None:
-            # Wait for the start event of the other source (when it's start is scheduled)
-            on_start._start_event.wait()
-        elif on_end is not None:
-            # Wait for the end event of the other source (when it's end is scheduled)
-            on_end._end_event.wait()
-
-        if offset is not None:
-            # Wait for a further offset after the other source has been scheduled to start
-            self._dipstream.wait_until_time(self._dipstream.now + offset)
-
     def start(
         self,
         at_time: float | None = None,
@@ -359,7 +355,11 @@ class _Source:
         self._must_exist_in_stream()
 
         # Wait for any delays or triggers before starting
-        self._wait_until_time_or_event(at_time, on_start, on_end, offset)
+        if on_start == self or on_end == self:
+            raise ValueError("Cannot schedule based on to self.")
+        if at_time is not None:
+            at_time = at_time - self._dipstream.latency # account for latency (ie, start early)
+        self._dipstream.wait_until(at_time, on_start, on_end, offset)
 
         # Set flags to schedule the source to start playing on the stream
         self._start_event.clear()
@@ -379,7 +379,7 @@ class _Source:
         with self._lock:
             start_time = self._start_time  # includes the latency of the system
         if start_time is not None:
-            self._dipstream.wait_until_time(start_time)
+            self._dipstream.wait_until(time_is=start_time)
 
     def stop(
         self,
@@ -394,7 +394,11 @@ class _Source:
         self._must_exist_in_stream()
 
         # Wait for any delays or triggers before stopping
-        self._wait_until_time_or_event(at_time, on_start, on_end, offset)
+        if on_start == self or on_end == self:
+            raise ValueError("Cannot schedule based on to self.")
+        if at_time is not None:
+            at_time = at_time - self._dipstream.latency # account for latency (ie, stop early)
+        self._dipstream.wait_until(at_time, on_start, on_end, offset)
 
         # Set flags to schedule the source to stop playing on the stream
         with self._lock:
@@ -409,4 +413,4 @@ class _Source:
         with self._lock:
             end_time = self._end_time  # includes the latency of the system
         if end_time is not None:
-            self._dipstream.wait_until_time(end_time)
+            self._dipstream.wait_until(time_is=end_time)
