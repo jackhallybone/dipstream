@@ -150,6 +150,11 @@ class DipStream:
         return self._stream.channels
 
     @property
+    def all_channels(self) -> list[int]:
+        """Return a list of all channel numbers ([1:n])."""
+        return list(range(1, self.channels + 1))
+
+    @property
     def latency(self) -> float:
         """Get the latency of the system."""
         return self._stream.latency
